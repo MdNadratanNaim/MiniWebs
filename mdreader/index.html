@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>md.reader — markdown, made readable</title>
+<meta name="description" content="Upload a markdown file or point at a link, get back a clean, typeset reading page." />
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+<!-- LaTeX rendering (KaTeX) -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+
+<link rel="stylesheet" href="style.css" />
+
+<!-- Set theme before first paint, to avoid a light/dark flash -->
+<script>
+(function () {
+  try {
+    var stored = localStorage.getItem('mdreader-theme');
+    var theme = stored === 'light' || stored === 'dark'
+      ? stored
+      : (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+    document.documentElement.setAttribute('data-theme', theme);
+  } catch (e) {
+    document.documentElement.setAttribute('data-theme', 'light');
+  }
+})();
+</script>
+</head>
+<body>
+
+  <div class="scan-line" id="scanLine" aria-hidden="true"></div>
+
+  <header class="topbar">
+    <div class="logo">markdown<span class="accent-dot">.</span>reader</div>
+    <div class="topbar-right">
+      <p class="topbar-tag">renders in your browser</p>
+      <button type="button" class="theme-toggle" id="themeToggle" aria-label="Switch to dark mode" aria-pressed="false">
+        <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <circle cx="12" cy="12" r="4.4"></circle>
+          <g class="sun-rays">
+            <line x1="12" y1="1.5" x2="12" y2="4.2"></line>
+            <line x1="12" y1="19.8" x2="12" y2="22.5"></line>
+            <line x1="1.5" y1="12" x2="4.2" y2="12"></line>
+            <line x1="19.8" y1="12" x2="22.5" y2="12"></line>
+            <line x1="4.4" y1="4.4" x2="6.3" y2="6.3"></line>
+            <line x1="17.7" y1="17.7" x2="19.6" y2="19.6"></line>
+            <line x1="4.4" y1="19.6" x2="6.3" y2="17.7"></line>
+            <line x1="17.7" y1="6.3" x2="19.6" y2="4.4"></line>
+          </g>
+        </svg>
+        <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M20.6 14.7A8.3 8.3 0 0 1 9.3 3.4a8.6 8.6 0 1 0 11.3 11.3Z"></path>
+        </svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- ===================== HOME / INPUT VIEW ===================== -->
+  <main class="home-view" id="homeView">
+
+    <section class="hero">
+      <p class="eyebrow">a small tool with one job</p>
+      <h1>Markdown, made readable.</h1>
+      <p class="subhead">Drop a file or point at a link. Get back a clean, typeset page — no syntax in sight.</p>
+    </section>
+
+    <section class="input-row">
+
+      <div class="card" id="uploadCard">
+        <p class="card-label">File</p>
+        <label class="dropzone" id="dropzone" for="fileInput" tabindex="0">
+          <input type="file" id="fileInput" accept=".md,.markdown,.txt,text/markdown,text/plain" hidden />
+          <span class="dz-icon" aria-hidden="true">⤓</span>
+          <span class="dz-text" id="dzText">Drop a .md file here, or click to browse</span>
+        </label>
+        <button type="button" class="clear-btn" id="clearFileBtn" hidden>Remove file</button>
+      </div>
+
+      <div class="divider" aria-hidden="true"><span>or</span></div>
+
+      <div class="card" id="linkCard">
+        <p class="card-label">Link</p>
+        <input
+          type="text"
+          id="linkInput"
+          class="link-input"
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="owner/repo/branch/file.md  or  https://…/file.md"
+        />
+        <p class="card-hint">GitHub-style paths resolve to raw.githubusercontent.com automatically.</p>
+      </div>
+
+    </section>
+
+    <div class="cta-row">
+      <button type="button" class="cta-btn" id="viewBtn">
+        <span id="viewBtnLabel">View rendered markdown</span>
+        <span class="arrow" aria-hidden="true">→</span>
+      </button>
+    </div>
+
+    <p class="url-hint">Tip: share a direct link with <code>?view=owner/repo/branch/file.md</code> or <code>?view=https://example.com/file.md</code></p>
+
+    <p class="error-line" id="errorLine" role="alert" hidden></p>
+
+  </main>
+
+  <!-- ===================== RENDERED / STANDALONE VIEW ===================== -->
+  <main class="render-view" id="renderView" hidden>
+
+    <div class="render-bar">
+      <button type="button" class="back-btn" id="backBtn">
+        <span aria-hidden="true">←</span> Back
+      </button>
+      <span class="render-filename" id="renderFilename"></span>
+      <div class="render-actions">
+        <button type="button" class="ghost-btn" id="copyLinkBtn">Copy link</button>
+        <a class="ghost-btn" id="sourceLink" href="#" target="_blank" rel="noopener" hidden>View source ↗</a>
+      </div>
+    </div>
+
+    <article class="md-content" id="mdContent" tabindex="-1"></article>
+
+  </main>
+
+  <footer class="footer">
+    <span>© Built by: Naim</span>
+  </footer>
+
+  <script src="script.js"></script>
+</body>
+</html>
