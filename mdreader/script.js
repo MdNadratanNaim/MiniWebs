@@ -126,21 +126,22 @@
   // single-pass synchronous render.
   let renderBaseUrl = null;
 
+  // Reference-style link/image definitions collected from the whole document
+  // (e.g. "[ref]: https://example.com \"title\""), keyed by lowercased label.
+  // Populated once per parseMarkdown() call, read by parseInline() below —
+  // same reasoning as renderBaseUrl above.
+  let renderLinkRefs = {};
+
   // Inline-level: bold, italic, strikethrough, code spans, links, images, autolinks.
   function parseInline(text) {
-    // 1. Let a literal "\$" through as a plain dollar sign, so currency
-    //    amounts next to real LaTeX (e.g. "costs \$5, see $x^2$") aren't
-    //    mistaken for a math delimiter.
-    text = text.replace(/\\\$/g, '\u0003DOLLAR\u0003');
-
-    // 2. Pull out inline code spans first so nothing inside them gets touched.
+    // 1. Pull out inline code spans first so nothing inside them gets touched.
     const codeSpans = [];
     text = text.replace(/`([^`]+)`/g, function (m, code) {
       const idx = codeSpans.push(escapeHtml(code)) - 1;
       return '\u0000CODE' + idx + '\u0000';
     });
 
-    // 3. Pull out LaTeX math spans before any other inline rule can see
+    // 2. LaTeX math spans, pulled out before any other inline rule can see
     //    them — markdown's *_ emphasis characters are extremely common
     //    inside math (subscripts, multiplication) and would otherwise get
     //    rewritten into <em>/<strong> tags. The literal "$...$"/"$$...$$"
@@ -159,8 +160,42 @@
       return '\u0002MATH' + idx + '\u0002';
     });
 
+    // 3. Backslash-escapes: "\*", "\_", "\[", etc. let any of these
+    //    markdown-significant characters through as a literal, the same way
+    //    real markdown does. This runs *after* code/math extraction above —
+    //    both are full of literal backslashes with their own meaning (LaTeX's
+    //    "\\" row separator, regex escapes, etc.) that must never be read as
+    //    markdown escape sequences. Restored as plain escaped text at the end.
+    const escapedChars = [];
+    text = text.replace(/\\([!"#$%&'()*+,\-./:;<=>?@[\]^_`{|}~\\])/g, function (m, ch) {
+      const idx = escapedChars.push(ch) - 1;
+      return '\u0003ESC' + idx + '\u0003';
+    });
+
     // 4. Let allowlisted HTML tags through as real markup; escape everything else.
     text = passThroughSafeHtml(text);
+
+    // 4b. Reference-style images/links: ![alt][ref] and [text][ref] (or the
+    //     shorthand [text][] which reuses the visible text as the ref key),
+    //     resolved against the "[ref]: url \"title\"" definitions collected
+    //     for the whole document in renderLinkRefs. Runs before the inline
+    //     "(url)" forms below since the bracket syntax is unambiguous either way.
+    text = text.replace(/!\[([^\]]*)\]\[([^\]]*)\]/g, function (m, alt, ref) {
+      const def = renderLinkRefs[(ref || alt).toLowerCase()];
+      if (!def) return m;
+      const safeUrl = resolveAgainstBase(sanitizeUrl(def.url), renderBaseUrl).replace(/"/g, '&quot;');
+      const safeAlt = alt.replace(/"/g, '&quot;');
+      return '<img src="' + safeUrl + '" alt="' + safeAlt + '"' +
+        (def.title ? ' title="' + def.title.replace(/"/g, '&quot;') + '"' : '') + ' loading="lazy">';
+    });
+    text = text.replace(/\[([^\]]+)\]\[([^\]]*)\]/g, function (m, label, ref) {
+      const def = renderLinkRefs[(ref || label).toLowerCase()];
+      if (!def) return m;
+      const safeUrl = resolveAgainstBase(sanitizeUrl(def.url), renderBaseUrl).replace(/"/g, '&quot;');
+      return '<a href="' + safeUrl + '"' +
+        (def.title ? ' title="' + def.title.replace(/"/g, '&quot;') + '"' : '') +
+        ' target="_blank" rel="noopener noreferrer">' + label + '</a>';
+    });
 
     // 5. Images ![alt](url "title")
     text = text.replace(
@@ -207,14 +242,118 @@
     });
 
     // 10. Restore math spans (as escaped literal "$...$" text — KaTeX's
-    //     auto-render pass typesets these after this HTML lands in the DOM)
-    //     and the literal "\$" escapes.
+    //     auto-render pass typesets these after this HTML lands in the DOM).
     text = text.replace(/\u0002MATH(\d+)\u0002/g, function (m, i) {
       return escapeHtml(mathSpans[+i]);
     });
-    text = text.replace(/\u0003DOLLAR\u0003/g, '$');
+
+    // 11. Restore backslash-escaped characters from step 1 as plain,
+    //     HTML-escaped literal text.
+    text = text.replace(/\u0003ESC(\d+)\u0003/g, function (m, i) {
+      return escapeHtml(escapedChars[+i]);
+    });
 
     return text;
+  }
+
+  // Indentation width of a line, counting a tab as 4 columns — used by
+  // parseListItems() to tell nested list items apart from their parents.
+  function leadingSpaces(line) {
+    const ws = line.match(/^[ \t]*/)[0];
+    let n = 0;
+    for (let c = 0; c < ws.length; c++) n += ws[c] === '\t' ? 4 : 1;
+    return n;
+  }
+
+  const LIST_ITEM_RE = /^[ \t]*(?:[-*+]|\d+[.)])\s+/;
+
+  // Parses a run of list items starting at lines[startIdx], all indented at
+  // exactly `indent`. Recurses into itself for any more-indented block
+  // immediately under an item, which lets a nested "- " or "1. " become a
+  // nested <ul>/<ol> rather than flattening into its parent's <li> text.
+  // Plain (non-list) indented lines under an item are treated as a wrapped
+  // paragraph continuation of that item instead. Returns the rendered HTML
+  // for this list plus the line index just past it.
+  function parseListItems(lines, startIdx, indent) {
+    let i = startIdx;
+    let type = null, start = null;
+    let itemsHtml = '';
+
+    while (i < lines.length) {
+      const line = lines[i];
+
+      // A blank line only continues the list if what follows (after any
+      // further blank lines) is still indented at or past this list's level
+      // — otherwise the list has ended.
+      if (/^[ \t]*$/.test(line)) {
+        let j = i + 1;
+        while (j < lines.length && /^[ \t]*$/.test(lines[j])) j++;
+        if (j >= lines.length) { i = j; break; }
+        const nextIndent = leadingSpaces(lines[j]);
+        const nextIsItem = LIST_ITEM_RE.test(lines[j]);
+        if (nextIndent >= indent && (nextIsItem || nextIndent > indent)) { i = j; continue; }
+        break;
+      }
+
+      const curIndent = leadingSpaces(line);
+      const m = line.match(/^[ \t]*([-*+]|\d+[.)])\s+(.*)$/);
+      if (curIndent !== indent || !m) break; // dedent ends this list, deeper indent belongs to an item above
+
+      const marker = m[1];
+      const isOrdered = /\d/.test(marker);
+      const itemType = isOrdered ? 'ol' : 'ul';
+      if (type === null) {
+        type = itemType;
+        if (isOrdered) start = parseInt(marker, 10);
+      } else if (itemType !== type) {
+        break; // a different marker type at the same level starts a new list
+      }
+
+      let content = m[2];
+      let checkboxHtml = '';
+      const task = content.match(/^\[([ xX])\]\s+(.*)$/);
+      if (task) {
+        checkboxHtml = '<input type="checkbox" disabled' + (task[1].toLowerCase() === 'x' ? ' checked' : '') + '> ';
+        content = task[2];
+      }
+
+      i++;
+      const contentLines = [content];
+      let nestedHtml = '';
+
+      // Everything more-indented than this item (until a line dedents back
+      // to `indent` or shallower) belongs to it: either a nested sub-list or
+      // a wrapped continuation line of the item's own paragraph text.
+      while (i < lines.length) {
+        const l = lines[i];
+
+        if (/^[ \t]*$/.test(l)) {
+          let k = i + 1;
+          while (k < lines.length && /^[ \t]*$/.test(lines[k])) k++;
+          if (k < lines.length && leadingSpaces(lines[k]) > indent) { i = k; continue; }
+          break;
+        }
+
+        const lIndent = leadingSpaces(l);
+        if (lIndent <= indent) break;
+
+        if (LIST_ITEM_RE.test(l)) {
+          const sub = parseListItems(lines, i, lIndent);
+          nestedHtml += sub.html;
+          i = sub.next;
+          continue;
+        }
+
+        contentLines.push(l.trim());
+        i++;
+      }
+
+      itemsHtml += '<li>' + checkboxHtml + parseInline(contentLines.join(' ')) + nestedHtml + '</li>';
+    }
+
+    if (!type) return { html: '', next: startIdx };
+    const startAttr = (type === 'ol' && start && start !== 1) ? ' start="' + start + '"' : '';
+    return { html: '<' + type + startAttr + '>' + itemsHtml + '</' + type + '>\n', next: i };
   }
 
   // Block-level: headers, paragraphs, lists, blockquotes, code fences, tables, hr.
@@ -224,29 +363,39 @@
     renderBaseUrl = baseUrl || null;
     src = (src || '').replace(/\r\n?/g, '\n');
     const lines = src.split('\n');
+
+    // Pre-scan reference-style link/image definitions ("[ref]: url \"title\"")
+    // anywhere in the document, so they can be used before or after they're
+    // declared. Definition lines are blanked out in place — they render as
+    // nothing themselves, matching normal markdown behavior — everything
+    // else is left untouched and at its original line index.
+    const linkRefs = {};
+    const linkDefRe = /^[ \t]{0,3}\[([^\]]+)\]:\s*(\S+)(?:\s+"([^"]*)")?\s*$/;
+    for (let li = 0; li < lines.length; li++) {
+      const dm = lines[li].match(linkDefRe);
+      if (dm) {
+        linkRefs[dm[1].toLowerCase()] = { url: dm[2], title: dm[3] || '' };
+        lines[li] = '';
+      }
+    }
+    renderLinkRefs = linkRefs;
+
     let html = '';
     let i = 0;
 
     let inCode = false, codeLang = '', codeBuf = [];
     let inMath = false, mathBuf = [];
-    let paraBuf = [];
-    let listType = null, listBuf = [];
+    let paraBuf = []; // { text, brk } — brk marks a hard line break after this line
     let quoteBuf = [];
 
     function flushPara() {
       if (paraBuf.length) {
-        html += '<p>' + parseInline(paraBuf.join(' ')) + '</p>\n';
+        let joined = paraBuf[0].text;
+        for (let p = 1; p < paraBuf.length; p++) {
+          joined += (paraBuf[p - 1].brk ? '<br>' : ' ') + paraBuf[p].text;
+        }
+        html += '<p>' + parseInline(joined) + '</p>\n';
         paraBuf = [];
-      }
-    }
-    function flushList() {
-      if (listType) {
-        const items = listBuf.map(function (it) {
-          return '<li>' + parseInline(it) + '</li>';
-        }).join('');
-        html += '<' + listType + '>' + items + '</' + listType + '>\n';
-        listType = null;
-        listBuf = [];
       }
     }
     function flushQuote() {
@@ -261,16 +410,32 @@
       if (cells.length && cells[cells.length - 1].trim() === '') cells.pop();
       return cells.map(function (c) { return c.trim(); });
     }
+    // Reads alignment (left/center/right) off the "---", ":---", "---:",
+    // ":---:" separator row cells; null means no explicit alignment.
+    function parseAlign(sepRow) {
+      return splitRow(sepRow).map(function (c) {
+        const left = c.charAt(0) === ':';
+        const right = c.charAt(c.length - 1) === ':';
+        if (left && right) return 'center';
+        if (right) return 'right';
+        if (left) return 'left';
+        return null;
+      });
+    }
     function flushTable(rows) {
       if (rows.length < 2) return;
       const head = splitRow(rows[0]);
+      const aligns = parseAlign(rows[1]);
       const body = rows.slice(2).map(splitRow);
+      function alignAttr(idx) {
+        return aligns[idx] ? ' style="text-align:' + aligns[idx] + '"' : '';
+      }
       let t = '<table><thead><tr>';
-      head.forEach(function (c) { t += '<th>' + parseInline(c) + '</th>'; });
+      head.forEach(function (c, idx) { t += '<th' + alignAttr(idx) + '>' + parseInline(c) + '</th>'; });
       t += '</tr></thead><tbody>';
       body.forEach(function (r) {
         t += '<tr>';
-        r.forEach(function (c) { t += '<td>' + parseInline(c) + '</td>'; });
+        r.forEach(function (c, idx) { t += '<td' + alignAttr(idx) + '>' + parseInline(c) + '</td>'; });
         t += '</tr>';
       });
       t += '</tbody></table>\n';
@@ -284,7 +449,7 @@
       const fence = line.match(/^```(.*)$/);
       if (fence) {
         if (!inCode) {
-          flushPara(); flushList(); flushQuote();
+          flushPara(); flushQuote();
           inCode = true; codeLang = fence[1].trim(); codeBuf = [];
         } else {
           html += '<pre><code class="lang-' + (codeLang || 'text') + '">' +
@@ -301,7 +466,7 @@
       const mathFence = /^\$\$\s*$/.test(line);
       if (mathFence) {
         if (!inMath) {
-          flushPara(); flushList(); flushQuote();
+          flushPara(); flushQuote();
           inMath = true; mathBuf = [];
         } else {
           html += '<div class="math-display">' +
@@ -314,14 +479,31 @@
 
       // blank line ends current block
       if (/^\s*$/.test(line)) {
-        flushPara(); flushList(); flushQuote();
+        flushPara(); flushQuote();
+        i++; continue;
+      }
+
+      // setext headings: a paragraph line immediately followed (no blank
+      // line between) by a line of "===" promotes it to <h1>, "---" to <h2>.
+      // Only fires mid-paragraph — once a blank line has flushed paraBuf, a
+      // lone "---" falls through to the horizontal-rule check below instead.
+      if (paraBuf.length && /^=+\s*$/.test(line)) {
+        const h1Text = paraBuf.map(function (p) { return p.text; }).join(' ');
+        html += '<h1>' + parseInline(h1Text) + '</h1>\n';
+        paraBuf = [];
+        i++; continue;
+      }
+      if (paraBuf.length && /^-+\s*$/.test(line)) {
+        const h2Text = paraBuf.map(function (p) { return p.text; }).join(' ');
+        html += '<h2>' + parseInline(h2Text) + '</h2>\n';
+        paraBuf = [];
         i++; continue;
       }
 
       // headers
       const header = line.match(/^(#{1,6})\s+(.*)$/);
       if (header) {
-        flushPara(); flushList(); flushQuote();
+        flushPara(); flushQuote();
         const level = header[1].length;
         html += '<h' + level + '>' + parseInline(header[2].trim()) + '</h' + level + '>\n';
         i++; continue;
@@ -329,7 +511,7 @@
 
       // horizontal rule
       if (/^\s*([-*_])\1{2,}\s*$/.test(line)) {
-        flushPara(); flushList(); flushQuote();
+        flushPara(); flushQuote();
         html += '<hr>\n';
         i++; continue;
       }
@@ -337,7 +519,7 @@
       // table: a row with "|" followed by a separator row of dashes/colons/pipes
       if (line.indexOf('|') !== -1 && lines[i + 1] &&
           /^\s*\|?[\s:|-]+\|?\s*$/.test(lines[i + 1]) && lines[i + 1].indexOf('-') !== -1) {
-        flushPara(); flushList(); flushQuote();
+        flushPara(); flushQuote();
         const rows = [line, lines[i + 1]];
         i += 2;
         while (i < lines.length && lines[i].indexOf('|') !== -1 && !/^\s*$/.test(lines[i])) {
@@ -350,34 +532,30 @@
       // blockquote
       const quote = line.match(/^>\s?(.*)$/);
       if (quote) {
-        flushPara(); flushList();
+        flushPara();
         quoteBuf.push(quote[1]);
         i++; continue;
       }
 
-      // unordered list
-      const ul = line.match(/^\s*[-*+]\s+(.*)$/);
-      if (ul) {
+      // lists (unordered "-*+" or ordered "1." / "1)"), with nesting,
+      // mixed ul/ol, task-list checkboxes, and multi-line item text —
+      // fully handled by parseListItems, which consumes every line that
+      // belongs to this list (including nested sub-lists) in one go.
+      if (LIST_ITEM_RE.test(line)) {
         flushPara(); flushQuote();
-        if (listType && listType !== 'ul') flushList();
-        listType = 'ul';
-        listBuf.push(ul[1]);
-        i++; continue;
+        const result = parseListItems(lines, i, leadingSpaces(line));
+        html += result.html;
+        i = result.next;
+        continue;
       }
 
-      // ordered list
-      const ol = line.match(/^\s*\d+[.)]\s+(.*)$/);
-      if (ol) {
-        flushPara(); flushQuote();
-        if (listType && listType !== 'ol') flushList();
-        listType = 'ol';
-        listBuf.push(ol[1]);
-        i++; continue;
-      }
-
-      // plain paragraph text
-      flushList(); flushQuote();
-      paraBuf.push(line.trim());
+      // plain paragraph text — a trailing double-space (or backslash) means
+      // a hard line break rather than just wrapping to the next line.
+      flushQuote();
+      paraBuf.push({
+        text: line.trim().replace(/\\$/, '').trim(),
+        brk: /(?: {2,}|\\)$/.test(line)
+      });
       i++;
     }
 
@@ -387,7 +565,7 @@
     if (inMath) {
       html += '<div class="math-display">' + escapeHtml('$$' + mathBuf.join('\n')) + '</div>\n';
     }
-    flushPara(); flushList(); flushQuote();
+    flushPara(); flushQuote();
 
     return html;
   }
