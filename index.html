@@ -1,11 +1,107 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Document</title>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>mini·web — a collection of small, useful tools</title>
+  <meta name="description" content="A curated collection of small, single-purpose web tools built to be fast, local, and elegant." />
+
+  <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-    <a class="hyperlink" href="./mdreader/">Markdown Reader</a>
+  <div class="ambient" aria-hidden="true"></div>
+
+  <div class="wrapper">
+
+    <!-- Top bar -->
+    <nav class="topbar" aria-label="Site navigation">
+      <a class="topbar-brand" href="/" aria-label="mini·web home">mini<span>·</span>web</a>
+      <div class="topbar-status" aria-label="Status: all tools operational">
+        <div class="status-dot" aria-hidden="true"></div>
+        all tools operational
+      </div>
+    </nav>
+
+    <!-- Hero -->
+    <header class="hero">
+      <!-- <p class="hero-eyebrow">Tool Hub</p> -->
+      <h1 class="hero-title">
+        Small<br>
+        <em>useful,</em><br>
+        tools<span class="dot">.</span>
+      </h1>
+      <p class="hero-sub">
+        A collection of small, useful web-based tools. This project serves as a central hub for various single-purpose utilities built as standalone webpages.
+      </p>
+    </header>
+
+    <!-- Section header -->
+    <div class="section-label" id="tools-section">
+      <span>Available Tools</span>
+      <span class="section-label-count">01 — 03</span>
+    </div>
+
+    <!-- Tool grid -->
+    <section class="tools-grid" aria-label="Available tools">
+
+      <!-- Tool 1: Markdown Reader -->
+      <a class="tool-card" id="tool-mdreader" href="./mdreader/" aria-label="Open Markdown Reader">
+        <div class="card-inner">
+          <span class="tool-number">01</span>
+          <span class="tool-icon" aria-hidden="true">⌞⌟</span>
+          <h2 class="tool-name">Markdown<br>Reader</h2>
+          <p class="tool-desc">
+            Drop a file or point at a URL. Get a clean, typeset reading view with LaTeX, tables, and deep linking — no server needed.
+          </p>
+          <div class="tool-tags">
+            <span class="tool-tag">Markdown</span>
+            <span class="tool-tag">LaTeX</span>
+            <span class="tool-tag">Local</span>
+          </div>
+        </div>
+        <span class="tool-arrow" aria-hidden="true">↗</span>
+      </a>
+
+      <!-- Tool 2: Coming soon -->
+      <div class="tool-card tool-card--soon" id="tool-coming-2" aria-label="Next tool — coming soon">
+        <div class="card-inner">
+          <span class="tool-number">02</span>
+          <span class="tool-icon" aria-hidden="true">◌</span>
+          <h2 class="tool-name">Coming<br>Soon</h2>
+          <p class="tool-desc">Another focused utility is being crafted. Stay tuned.</p>
+          <div class="soon-badge">
+            <span class="soon-dot" aria-hidden="true"></span>
+            in progress
+          </div>
+        </div>
+      </div>
+
+      <!-- Tool 3: Coming soon -->
+      <div class="tool-card tool-card--soon" id="tool-coming-3" aria-label="Future tool — coming soon">
+        <div class="card-inner">
+          <span class="tool-number">03</span>
+          <span class="tool-icon" aria-hidden="true">◌</span>
+          <h2 class="tool-name">Coming<br>Soon</h2>
+          <p class="tool-desc">Something small and useful is being designed for this slot.</p>
+          <div class="soon-badge">
+            <span class="soon-dot" aria-hidden="true"></span>
+            planned
+          </div>
+        </div>
+      </div>
+
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+      <span class="footer-credit">
+        Built by <a href="#">Naim</a> — static, local, no tracking.
+      </span>
+      <span class="footer-meta" aria-hidden="true">mini·web / v1</span>
+    </footer>
+
+  </div>
+
+  <script src="scripts.js"></script>
 </body>
 </html>
